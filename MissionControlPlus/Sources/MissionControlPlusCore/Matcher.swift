@@ -156,7 +156,15 @@ public enum TitleMatcher {
                 let infix = sep + appName + sep
                 if let range = trimmed.range(of: infix, options: .backwards) {
                     let stripped = String(trimmed[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !stripped.isEmpty { variants.append(stripped) }
+                    if !stripped.isEmpty {
+                        variants.append(stripped)
+                        for innerSep in titleSeparators {
+                            if let innerRange = stripped.range(of: innerSep, options: .backwards) {
+                                let head = String(stripped[..<innerRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+                                if !head.isEmpty { variants.append(head) }
+                            }
+                        }
+                    }
                 }
             }
         }

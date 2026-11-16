@@ -48,15 +48,15 @@ final class Diagnostics {
         groups: [AXUIElement],
         snapshot: MissionControlSnapshot,
         outcome: WindowResolver.Outcome?,
-        windows: [WindowRecord]
+        windows: [WindowRecord],
+        appCandidates: [AppWindowCandidate] = [],
+        managedSpaces: [ManagedSpaceDescriptor] = [],
+        fixedFilename: String? = nil
     ) -> URL? {
         var s = header()
         reader.environmentReport(into: &s)
-        s += "\n## AX Tree (\(groups.count) group(s))\n"
-        for (i, group) in groups.enumerated() {
-            s += "--- Group[\(i)] ---\n"
-            reader.dumpTree(group, into: &s, maxDepth: 12)
-        }
+        s += "\n## Host Mission Control Trees\n"
+        reader.dumpAllHostMissionControlTrees(into: &s)
 
         s += "\n## Thumbnails (\(snapshot.thumbnails.count))\n"
         for (i, t) in snapshot.thumbnails.enumerated() {
@@ -67,7 +67,18 @@ final class Diagnostics {
         for (i, sp) in snapshot.spaces.enumerated() {
             let lf = sp.labelFrame.map(fmt) ?? "-"
             let listF = sp.listFrame.map(fmt) ?? "-"
-            s += "[\(i)] frame=\(fmt(sp.frame)) labelFrame=\(lf) listFrame=\(listF) id=\(sp.identifier ?? "-") title=\"\(sp.title)\"\n"
+            let rawF = sp.rawFrame.map(fmt) ?? "-"
+            s += "[\(i)] frame=\(fmt(sp.frame)) raw=\(rawF) labelFrame=\(lf) listFrame=\(listF) id=\(sp.identifier ?? "-") title=\"\(sp.title)\"\n"
+        }
+
+        s += "\n## Managed Spaces from SkyLight (\(managedSpaces.count))\n"
+        for (i, ms) in managedSpaces.enumerated() {
+            s += "[\(i)] id=\(ms.spaceID) idx=\(ms.spaceIndex) fs=\(ms.isFullScreen) apps=\(ms.appShortNames) display=\(ms.displayUUID ?? "-")\n"
+        }
+
+        s += "\n## App AX Windows Across Spaces (\(appCandidates.count))\n"
+        for c in appCandidates {
+            s += "pid=\(c.ownerPID) short=\"\(c.shortName)\" local=\"\(c.localizedName)\" fs=\(c.isFullScreen) min=\(c.isMinimized) title=\"\(c.title)\"\n"
         }
 
         s += "\n## On-screen CG Windows (\(windows.count))\n"
@@ -96,14 +107,14 @@ final class Diagnostics {
             s += "\n## Stats\nthumbnails=\(st.thumbnailCount) spaces=\(st.spaceCount) resolvedSpaces=\(st.resolvedSpaceCount) candidates=\(st.candidateWindowCount) unique=\(st.uniqueMatches) id=\(st.identifierMatches) fallback=\(st.titleUniqueFallbacks) unmatched=\(st.unmatched) elapsed=\(String(format: "%.1f", st.elapsed * 1000))ms\n"
         }
 
-        return save(s, prefix: "diagnostic")
+        return save(s, prefix: "diagnostic", fixedFilename: fixedFilename)
     }
 
     func writeNotFound(reader: MissionControlReader) -> URL? {
         var s = header()
         s += "\n## Status: Mission Control group not found within \(Int(Self.notFoundTimeout))s\n\n"
         reader.environmentReport(into: &s)
-        return save(s, prefix: "not-found")
+        return save(s, prefix: "not-found", fixedFilename: nil)
     }
 
     private func header() -> String {
@@ -117,12 +128,17 @@ final class Diagnostics {
         return s
     }
 
-    private func save(_ contents: String, prefix: String) -> URL? {
+    private func save(_ contents: String, prefix: String, fixedFilename: String?) -> URL? {
         let dir = Self.logDirectory
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let f = ISO8601DateFormatter()
-        let stamp = f.string(from: Date()).replacingOccurrences(of: ":", with: "-")
-        let url = dir.appendingPathComponent("\(prefix)-\(stamp).txt")
+        let url: URL
+        if let fixedFilename {
+            url = dir.appendingPathComponent(fixedFilename)
+        } else {
+            let f = ISO8601DateFormatter()
+            let stamp = f.string(from: Date()).replacingOccurrences(of: ":", with: "-")
+            url = dir.appendingPathComponent("\(prefix)-\(stamp).txt")
+        }
         do {
             try contents.write(to: url, atomically: true, encoding: .utf8)
             return url

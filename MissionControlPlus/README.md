@@ -17,9 +17,9 @@ cd MissionControlPlus
 open build/MissionControlPlus.app
 ```
 
-Launching opens the **MissionControlPlus** controls window with toggle switches (closing the window keeps it running in the menu bar popover). On first launch, allow `MissionControlPlus` under **System Settings → Privacy & Security → Accessibility**.
+Launching opens the **MissionControlPlus** controls window with toggle switches (closing the window keeps it running in the menu bar popover). On first launch, allow `MissionControlPlus` under **System Settings → Privacy & Security → Device Control and Data Access** (Accessibility).
 
-> Note: If built with ad-hoc signing (`-`), macOS requires re-enabling the Accessibility toggle after rebuilding.
+> Note: If built with ad-hoc signing (`-`), click **Reset Stale Entry** in the app (or run `tccutil reset Accessibility com.robbieperlstein.MissionControlPlus`) and re-enable the toggle after rebuilding.
 
 ## Undo / Remove Completely
 

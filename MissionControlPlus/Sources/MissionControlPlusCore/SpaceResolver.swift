@@ -1,7 +1,8 @@
 import Foundation
 
-/// Resolves Mission Control top Spaces bar contextual titles (e.g. `"Top 10 recipes"`,
-/// `"Interview Sim...Continuation"`, Split View `"Doc & Channel"`) to short app names (`"Chrome"`, `"Slack"`).
+/// Resolves Mission Control top Spaces bar items to their owning application's short name.
+/// Uses authoritative WindowServer space ownership (`ManagedSpaceDescriptor`) first,
+/// falling back to full-screen `AXWindow` title matching when needed.
 public enum SpaceTitleResolver {
     private static let desktopPrefixes = [
         "desktop",
@@ -36,10 +37,63 @@ public enum SpaceTitleResolver {
 
     public static func resolve(
         spaces: [SpaceItem],
-        candidates: [AppWindowCandidate]
+        managedSpaces: [ManagedSpaceDescriptor] = [],
+        candidates: [AppWindowCandidate] = []
     ) -> [ResolvedSpaceOverlay] {
+        guard !spaces.isEmpty else { return [] }
+
+        // Sort spaces left-to-right (grouped by row/display) so indices line up with WindowServer's Spaces array.
+        let sortedSpaces = spaces.sorted { a, b in
+            if abs(a.frame.minY - b.frame.minY) > 40 { return a.frame.minY < b.frame.minY }
+            return a.frame.minX < b.frame.minX
+        }
+
+        // 1. Primary path: 1-to-1 index mapping with SLSCopyManagedDisplaySpaces when counts match.
+        if managedSpaces.count == sortedSpaces.count {
+            var out: [ResolvedSpaceOverlay] = []
+            for (space, desc) in zip(sortedSpaces, managedSpaces) {
+                guard desc.isFullScreen else { continue }
+                if let name = desc.displayName {
+                    let conf: ResolvedSpaceOverlay.Confidence = desc.appShortNames.count > 1 ? .splitView : .fullScreenWindow
+                    out.append(
+                        ResolvedSpaceOverlay(
+                            spaceItem: space,
+                            displayName: name,
+                            originalTitle: space.title,
+                            confidence: conf
+                        )
+                    )
+                } else if let byTitle = resolveOne(space, candidates: candidates) {
+                    out.append(byTitle)
+                }
+            }
+            return out
+        }
+
+        // 2. Secondary path: if only full-screen spaces are compared or counts differ, align full-screen spaces in order.
+        let nonDesktopSpaces = sortedSpaces.filter { !isDesktopSpaceTitle($0.title) }
+        let fullScreenManaged = managedSpaces.filter(\.isFullScreen)
+        if !nonDesktopSpaces.isEmpty, nonDesktopSpaces.count == fullScreenManaged.count {
+            var out: [ResolvedSpaceOverlay] = []
+            for (space, desc) in zip(nonDesktopSpaces, fullScreenManaged) {
+                if let name = desc.displayName {
+                    let conf: ResolvedSpaceOverlay.Confidence = desc.appShortNames.count > 1 ? .splitView : .fullScreenWindow
+                    out.append(
+                        ResolvedSpaceOverlay(
+                            spaceItem: space,
+                            displayName: name,
+                            originalTitle: space.title,
+                            confidence: conf
+                        )
+                    )
+                }
+            }
+            if !out.isEmpty { return out }
+        }
+
+        // 3. Fallback path: match against full-screen AXWindow candidates by title.
         var result: [ResolvedSpaceOverlay] = []
-        for space in spaces {
+        for space in sortedSpaces {
             if let resolved = resolveOne(space, candidates: candidates) {
                 result.append(resolved)
             }
@@ -54,13 +108,7 @@ public enum SpaceTitleResolver {
         let raw = space.title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty, !isDesktopSpaceTitle(raw) else { return nil }
 
-        // First try resolving the entire title as a single window (prevents splitting titles like "Arts & Crafts").
         if let single = resolveSingleTitle(raw, candidates: candidates) {
-            // Avoid redundant work only if label already equals the exact short app name?
-            // No: returning it keeps pill appearance consistent, or wait—if raw == single.name,
-            // wait: e.g. "Antigravity" -> "Antigravity" doesn't hurt, or skipping when identical
-            // leaves the native label untouched with zero visual flash! Let's check:
-            // Actually, skipping when `raw == single.name` keeps "Antigravity" clean & native!
             if raw == single.name { return nil }
             return ResolvedSpaceOverlay(
                 spaceItem: space,
@@ -70,7 +118,6 @@ public enum SpaceTitleResolver {
             )
         }
 
-        // Next try Split View ("<Left> & <Right>" or "<Left> + <Right>").
         for sep in splitViewSeparators where raw.contains(sep) {
             let parts = raw.components(separatedBy: sep)
             guard parts.count == 2 else { continue }
@@ -101,7 +148,7 @@ public enum SpaceTitleResolver {
         if let single = resolveSingleTitle(raw, candidates: candidates) {
             return single.name
         }
-        let matchingApps = Set(candidates.compactMap { c -> String? in
+        let matchingApps = Set(candidates.filter(\.isFullScreen).compactMap { c -> String? in
             if c.shortName == raw || c.localizedName == raw { return c.shortName }
             return nil
         })
@@ -117,19 +164,12 @@ public enum SpaceTitleResolver {
         _ raw: String,
         candidates: [AppWindowCandidate]
     ) -> SingleMatch? {
-        let activeCandidates = candidates.filter { !$0.isMinimized }
-        let fullScreen = activeCandidates.filter(\.isFullScreen)
-
-        // 1. Prioritize AXFullScreen windows (raw match, then stripped-suffix match, then pattern match).
+        // Strictly restrict title matching for top-bar Spaces to full-screen windows so regular
+        // windows on the Desktop (e.g. a browser tab with a similar title) never false-match a Space.
+        let fullScreen = candidates.filter { !$0.isMinimized && $0.isFullScreen }
         if let name = uniqueAppMatch(for: raw, in: fullScreen, allowDirectAppName: true) {
             return SingleMatch(name: name, confidence: .fullScreenWindow)
         }
-
-        // 2. Fallback across all non-minimized app windows (handles apps that omit AXFullScreen).
-        if let name = uniqueAppMatch(for: raw, in: activeCandidates, allowDirectAppName: false) {
-            return SingleMatch(name: name, confidence: .allWindowFallback)
-        }
-
         return nil
     }
 
@@ -140,27 +180,23 @@ public enum SpaceTitleResolver {
     ) -> String? {
         guard !candidates.isEmpty else { return nil }
 
-        // Tier A: exact match against raw window title.
         let exactRaw = Set(candidates.filter {
             $0.title.trimmingCharacters(in: .whitespacesAndNewlines) == query
         }.map(\.shortName))
         if exactRaw.count == 1 { return exactRaw.first }
 
-        // Tier B: exact match against title with app/profile suffixes stripped.
         let exactStripped = Set(candidates.filter { c in
             TitleMatcher.titleVariants(rawTitle: c.title, shortName: c.shortName, localizedName: c.localizedName)
                 .contains(query)
         }.map(\.shortName))
         if exactStripped.count == 1 { return exactStripped.first }
 
-        // Tier C: ellipsis pattern match ("Interview Sim...Continuation", "# Director of...uestions: F...")
         let patternHits = Set(candidates.filter { c in
             TitleMatcher.titleVariants(rawTitle: c.title, shortName: c.shortName, localizedName: c.localizedName)
                 .contains { TitleMatcher.matchesPattern(query, candidate: $0) }
         }.map(\.shortName))
         if patternHits.count == 1 { return patternHits.first }
 
-        // Tier D: direct app name match (only for known full-screen windows).
         if allowDirectAppName {
             let directApps = Set(candidates.compactMap { c -> String? in
                 (c.shortName == query || c.localizedName == query) ? c.shortName : nil

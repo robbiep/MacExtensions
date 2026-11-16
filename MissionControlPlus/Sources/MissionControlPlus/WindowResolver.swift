@@ -16,6 +16,8 @@ final class WindowResolver {
     private var runningByBundleID: [String: [NSRunningApplication]] = [:]
 
     private(set) var lastWindows: [WindowRecord] = []
+    private(set) var lastAppWindowCandidates: [AppWindowCandidate] = []
+    private(set) var lastManagedSpaces: [ManagedSpaceDescriptor] = []
 
     struct AppWindowInfo {
         let title: String
@@ -75,13 +77,19 @@ final class WindowResolver {
         }
 
         var spaceOverlays: [ResolvedSpaceOverlay] = []
+        lastAppWindowCandidates = []
+        lastManagedSpaces = []
         if resolveSpaces && !snapshot.spaces.isEmpty {
-            let hasNonDesktop = snapshot.spaces.contains { !SpaceTitleResolver.isDesktopSpaceTitle($0.title) }
-            if hasNonDesktop {
-                let allCandidates = collectAllAppWindowCandidates()
-                spaceOverlays = SpaceTitleResolver.resolve(spaces: snapshot.spaces, candidates: allCandidates)
-                stats.resolvedSpaceCount = spaceOverlays.count
-            }
+            let managed = SpaceOwnershipReader.managedSpaces(excludedPIDs: excludedPIDs.union(hostPIDs))
+            lastManagedSpaces = managed
+            let allCandidates = collectAllAppWindowCandidates()
+            lastAppWindowCandidates = allCandidates
+            spaceOverlays = SpaceTitleResolver.resolve(
+                spaces: snapshot.spaces,
+                managedSpaces: managed,
+                candidates: allCandidates
+            )
+            stats.resolvedSpaceCount = spaceOverlays.count
         }
 
         stats.elapsed = Date().timeIntervalSince(start)

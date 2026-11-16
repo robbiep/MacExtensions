@@ -38,6 +38,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var launchAtLogin: Bool
     @Published private(set) var isTrusted: Bool
     @Published private(set) var engineState: Engine.State = .inactive
+    @Published var lastStatsSummary: String?
     @Published var diagnosticNote: String?
 
     var featureConfig: FeatureConfig {
@@ -51,7 +52,7 @@ final class AppModel: ObservableObject {
     }
 
     var statusLabel: String {
-        if !isTrusted { return "Accessibility Required" }
+        if !isTrusted { return "Permission Required" }
         if !isMasterEnabled { return "Turned Off" }
         if !featureConfig.shouldRunEngine { return "On (All Features Off)" }
         switch engineState {
@@ -110,6 +111,11 @@ final class AppModel: ObservableObject {
                 self?.engineState = newState
             }
         }
+        engine.onStatsUpdate = { [weak self] st in
+            Task { @MainActor [weak self] in
+                self?.lastStatsSummary = "Last run: \(st.thumbnailCount) windows, \(st.spaceCount) spaces (\(st.resolvedSpaceCount) renamed)"
+            }
+        }
         engine.onPermissionChange = { [weak self] trusted in
             Task { @MainActor [weak self] in
                 self?.handleTrustChange(trusted)
@@ -155,6 +161,19 @@ final class AppModel: ObservableObject {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    func resetStaleAccessibilityEntry() {
+        guard let bundleID = Bundle.main.bundleIdentifier else { return }
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+        task.arguments = ["reset", "Accessibility", bundleID]
+        try? task.run()
+        task.waitUntilExit()
+        diagnosticNote = "Permission entry reset — toggle MissionControlPlus ON in Device Control and Data Access."
+        AX.promptForTrust()
+        openAccessibilitySettings()
+        refreshAccessibilityStatus()
     }
 
     func setLaunchAtLogin(_ enable: Bool) {

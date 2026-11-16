@@ -118,21 +118,27 @@ private struct AccessibilityBanner: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("Accessibility Permission Required", systemImage: "hand.raised.fill")
+            Label("Device Control & Data Access Required", systemImage: "hand.raised.fill")
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.orange)
 
-            Text("MissionControlPlus reads WindowManager/Dock layout via Accessibility (no Screen Recording, no SIP changes).")
+            Text("Enable MissionControlPlus under Privacy & Security → Device Control and Data Access (macOS 27's name for Accessibility). If it already shows as ON after a rebuild, click Reset Stale Entry first.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             HStack(spacing: 8) {
-                Button("Open Privacy Settings") {
+                Button("Open Settings") {
                     model.requestAccessibilityPrompt()
                     model.openAccessibilitySettings()
                 }
                 .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+
+                Button("Reset Stale Entry") {
+                    model.resetStaleAccessibilityEntry()
+                }
+                .buttonStyle(.bordered)
                 .controlSize(.small)
 
                 Button("Check Again") {
@@ -265,6 +271,12 @@ private struct AppBehaviorCard: View {
                         model.quit()
                     }
                     .controlSize(.small)
+                }
+
+                if let summary = model.lastStatsSummary {
+                    Text(summary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 if let note = model.diagnosticNote {

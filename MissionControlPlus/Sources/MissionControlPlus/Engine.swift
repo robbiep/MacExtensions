@@ -6,10 +6,10 @@ import os
 final class Engine {
     enum State: String { case inactive, idle, settling, showing }
 
-    static let idleInterval: TimeInterval = 0.06
-    static let openInterval: TimeInterval = 0.06
+    static let idleInterval: TimeInterval = 0.05
+    static let openInterval: TimeInterval = 0.04
     static let noPermissionInterval: TimeInterval = 1.0
-    static let renderThrottle: TimeInterval = 0.12
+    static let renderThrottle: TimeInterval = 0.04
 
     private let log = Logger(subsystem: "com.robbieperlstein.MissionControlPlus", category: "engine")
     private let queue = DispatchQueue(label: "com.robbieperlstein.MissionControlPlus.collector", qos: .userInitiated)
@@ -23,6 +23,7 @@ final class Engine {
     private var enabled = false
     private var generation = 0
     private var renderedSnapshot: MissionControlSnapshot?
+    private var lastAutoDiagnosticSpaces: [SpaceItem]?
     private var lastRender = Date.distantPast
     private var wasOpen = false
     private var currentSession: SessionToken
@@ -33,6 +34,7 @@ final class Engine {
         didSet { onStateChange?(state) }
     }
     var onStateChange: ((State) -> Void)?
+    var onStatsUpdate: ((ResolveStats) -> Void)?
     var onDiagnosticWritten: ((URL?) -> Void)?
     var onPermissionChange: ((Bool) -> Void)?
 
@@ -143,6 +145,7 @@ final class Engine {
 
         if !wasOpen {
             wasOpen = true
+            lastAutoDiagnosticSpaces = nil
             currentSession = sessions.advance()
             resolver.invalidateSessionCaches()
             log.debug("mission control opened")
@@ -211,6 +214,34 @@ final class Engine {
                 session: session
             )
             self.state = .showing
+            self.onStatsUpdate?(st)
+        }
+
+        // Update `latest-session.txt` and mode-specific snapshot whenever the Spaces bar layout changes.
+        let spacesChanged = lastAutoDiagnosticSpaces.map { !LayoutStability.spacesEqual($0, snapshot.spaces) } ?? true
+        if spacesChanged {
+            lastAutoDiagnosticSpaces = snapshot.spaces
+            let modeName = SpacePillLayout.detectMode(for: snapshot.spaces) == .compact ? "compact-session.txt" : "expanded-session.txt"
+            _ = diagnostics.write(
+                reader: reader,
+                groups: groups,
+                snapshot: snapshot,
+                outcome: outcome,
+                windows: resolver.lastWindows,
+                appCandidates: resolver.lastAppWindowCandidates,
+                managedSpaces: resolver.lastManagedSpaces,
+                fixedFilename: modeName
+            )
+            _ = diagnostics.write(
+                reader: reader,
+                groups: groups,
+                snapshot: snapshot,
+                outcome: outcome,
+                windows: resolver.lastWindows,
+                appCandidates: resolver.lastAppWindowCandidates,
+                managedSpaces: resolver.lastManagedSpaces,
+                fixedFilename: "latest-session.txt"
+            )
         }
 
         if diagnostics.isArmed {
@@ -220,7 +251,9 @@ final class Engine {
                 groups: groups,
                 snapshot: snapshot,
                 outcome: outcome,
-                windows: resolver.lastWindows
+                windows: resolver.lastWindows,
+                appCandidates: resolver.lastAppWindowCandidates,
+                managedSpaces: resolver.lastManagedSpaces
             )
             DispatchQueue.main.async { self.onDiagnosticWritten?(url) }
             if !config.shouldRunEngine { stopOnQueue() }

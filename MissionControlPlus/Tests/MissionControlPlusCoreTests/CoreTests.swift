@@ -79,26 +79,64 @@ struct GeometryAndBundleTests {
         #expect(compactPill.height == 26)
         #expect(compactPill.width == 130)
 
-        // 3. Expanded thumbnail button without labelFrame, space below inside listFrame
-        let left = SpaceItem(title: "Desktop", frame: CGRect(x: 60, y: 20, width: 120, height: 74))
-        let mid = SpaceItem(
-            title: "Interview Sim...Continuation",
-            frame: CGRect(x: 204, y: 20, width: 120, height: 74),
-            listFrame: CGRect(x: 40, y: 14, width: 900, height: 108)
-        )
-        let right = SpaceItem(title: "Antigravity", frame: CGRect(x: 348, y: 20, width: 120, height: 74))
-        let expandedPill = SpacePillLayout.pillFrame(
-            for: mid,
-            displayTextWidth: 48,
-            nativeTextWidth: 140,
-            leftNeighborFrame: left.frame,
-            rightNeighborFrame: right.frame
-        )
-        #expect(expandedPill.minY >= 94)
-        #expect(expandedPill.maxY <= 122)
-        // Must not cross halfway into left or right thumbnails (midpoints are at 192 and 336).
-        #expect(expandedPill.minX >= 192)
-        #expect(expandedPill.maxX <= 336)
+        // 3. Expanded thumbnail cards normalized from WindowManager center-origin (e.g. 473,125 168x129 -> 389,60.5 168x129)
+        let expandedItems = [
+            SpacePillLayout.LayoutItem(
+                space: SpaceItem(title: "Desktop", frame: CGRect(x: 389, y: 60.5, width: 168, height: 129), axIndex: 0),
+                displayTextWidth: 50,
+                nativeTextWidth: 50
+            ),
+            SpacePillLayout.LayoutItem(
+                space: SpaceItem(title: "Logseq", frame: CGRect(x: 560, y: 60.5, width: 168, height: 129), axIndex: 1),
+                displayTextWidth: 46,
+                nativeTextWidth: 46
+            ),
+            SpacePillLayout.LayoutItem(
+                space: SpaceItem(title: "Custom Mission Control ma...", frame: CGRect(x: 730, y: 60.5, width: 168, height: 129), axIndex: 2),
+                displayTextWidth: 74,
+                nativeTextWidth: 150
+            ),
+        ]
+        #expect(SpacePillLayout.detectMode(for: expandedItems.map(\.space)) == .expanded)
+        let expandedRects = SpacePillLayout.pillFrames(for: expandedItems)
+        #expect(expandedRects.count == 3)
+        // Label sits inside bottom band of card (y ~ 168.5..189.5), centered on each card's midX.
+        #expect(abs(expandedRects[1].midX - 644) <= 1.0)
+        #expect(abs(expandedRects[1].midY - 179) <= 1.5)
+        // Adjacent pills must never overlap.
+        #expect(expandedRects[1].maxX + SpacePillLayout.minInterPillGap <= expandedRects[2].minX + 1.0)
+
+        // 4. Compact mode with variable X spacing when WindowManager keeps 129pt card height slid upward
+        let compactRow = [
+            SpacePillLayout.LayoutItem(
+                space: SpaceItem(title: "Desktop", frame: CGRect(x: 65 - 84, y: 14 - 64.5, width: 168, height: 129), axIndex: 0),
+                displayTextWidth: 50,
+                nativeTextWidth: 58
+            ),
+            SpacePillLayout.LayoutItem(
+                space: SpaceItem(title: "Logseq", frame: CGRect(x: 147 - 84, y: 14 - 64.5, width: 168, height: 129), axIndex: 1),
+                displayTextWidth: 46,
+                nativeTextWidth: 50
+            ),
+            SpacePillLayout.LayoutItem(
+                space: SpaceItem(title: "Hub - Action", frame: CGRect(x: 245 - 84, y: 14 - 64.5, width: 168, height: 129), axIndex: 2),
+                displayTextWidth: 46,
+                nativeTextWidth: 88
+            ),
+            SpacePillLayout.LayoutItem(
+                space: SpaceItem(title: "Custom Mission Control ma...", frame: CGRect(x: 421 - 84, y: 14 - 64.5, width: 168, height: 129), axIndex: 3),
+                displayTextWidth: 74,
+                nativeTextWidth: 208
+            ),
+        ]
+        #expect(SpacePillLayout.detectMode(for: compactRow.map(\.space)) == .compact)
+        let compactRects = SpacePillLayout.pillFrames(for: compactRow)
+        for pair in zip(compactRects, compactRects.dropFirst()) {
+            #expect(pair.0.maxX <= pair.1.minX)
+        }
+        // Bottom label band of slid-up 129pt card (maxY = 78.5 -> pill midY ~ 70.5)
+        #expect(abs(compactRects[1].midY - 70.5) <= 1.0)
+        #expect(abs(compactRects[3].midX - 421) <= 1.0)
     }
 
     @Test func overlayAnchorAndSizingPolicy() {
@@ -140,10 +178,11 @@ struct MatcherTests {
         #expect(!TitleMatcher.matchesPattern("# Director of...uestions: F...", candidate: "# General Chat"))
 
         let variants = TitleMatcher.titleVariants(
-            rawTitle: "Top 10 recipes - Google Chrome - Personal",
+            rawTitle: "Top 10 recipes - Audio playing - Google Chrome - Personal",
             shortName: "Chrome",
             localizedName: "Google Chrome"
         )
+        #expect(variants.contains("Top 10 recipes - Audio playing"))
         #expect(variants.contains("Top 10 recipes"))
 
         let slackVariants = TitleMatcher.titleVariants(
@@ -309,6 +348,51 @@ struct SpaceTitleResolverTests {
         let splitResolved = SpaceTitleResolver.resolveOne(splitSpace, candidates: candidates)
         #expect(splitResolved?.displayName == "Chrome & Slack")
         #expect(splitResolved?.confidence == .splitView)
+    }
+
+    @Test func managedSpaceDescriptorsResolveAuthoritativelyIncludingInactiveSpaces() {
+        let spaces = [
+            SpaceItem(title: "Desktop", frame: CGRect(x: 40, y: 20, width: 120, height: 80)),
+            SpaceItem(title: "More researc...[[@Zhaklin...", frame: CGRect(x: 180, y: 20, width: 120, height: 80)),
+            SpaceItem(title: "Hub - Action", frame: CGRect(x: 320, y: 20, width: 120, height: 80)),
+            SpaceItem(title: "Change Missi...ontrol Labels", frame: CGRect(x: 460, y: 20, width: 120, height: 80)),
+            SpaceItem(title: "Split Workspace", frame: CGRect(x: 600, y: 20, width: 120, height: 80)),
+        ]
+        let managed = [
+            ManagedSpaceDescriptor(spaceIndex: 0, spaceID: 4, isFullScreen: false, appShortNames: []),
+            ManagedSpaceDescriptor(spaceIndex: 1, spaceID: 892, isFullScreen: true, appShortNames: ["Logseq"]),
+            ManagedSpaceDescriptor(spaceIndex: 2, spaceID: 489, isFullScreen: true, appShortNames: ["Notion"]),
+            ManagedSpaceDescriptor(spaceIndex: 3, spaceID: 1777, isFullScreen: true, appShortNames: ["Antigravity"]),
+            ManagedSpaceDescriptor(spaceIndex: 4, spaceID: 1900, isFullScreen: true, appShortNames: ["Chrome", "Slack"]),
+        ]
+        // Even if a non-fullscreen Chrome window on the Desktop has a matching title,
+        // managedSpaces maps each Space to its true full-screen owner.
+        let desktopChromeCandidate = [
+            AppWindowCandidate(
+                ownerPID: 44205,
+                bundleID: "com.google.Chrome",
+                shortName: "Chrome",
+                localizedName: "Google Chrome",
+                title: "Change Mission Control Labels - Google Chrome",
+                isFullScreen: false
+            ),
+        ]
+
+        let resolved = SpaceTitleResolver.resolve(
+            spaces: spaces,
+            managedSpaces: managed,
+            candidates: desktopChromeCandidate
+        )
+        #expect(resolved.count == 4)
+        #expect(resolved.map(\.displayName) == ["Logseq", "Notion", "Antigravity", "Chrome & Slack"])
+
+        // Without managedSpaces, non-fullscreen Desktop windows still must never false-match a Space.
+        let fallbackOnly = SpaceTitleResolver.resolve(
+            spaces: spaces,
+            managedSpaces: [],
+            candidates: desktopChromeCandidate
+        )
+        #expect(fallbackOnly.isEmpty)
     }
 
     @Test func sameAppSplitViewCollapsesToSingleAppName() {

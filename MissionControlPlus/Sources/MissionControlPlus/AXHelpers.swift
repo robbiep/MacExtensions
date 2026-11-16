@@ -13,6 +13,16 @@ enum AX {
         attribute(element, name, as: String.self)
     }
 
+    static func nonEmptyString(_ element: AXUIElement, _ attributes: [String]) -> String? {
+        for name in attributes {
+            if let s = string(element, name)?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !s.isEmpty {
+                return s
+            }
+        }
+        return nil
+    }
+
     static func bool(_ element: AXUIElement, _ name: String) -> Bool? {
         var value: CFTypeRef?
         let err = AXUIElementCopyAttributeValue(element, name as CFString, &value)

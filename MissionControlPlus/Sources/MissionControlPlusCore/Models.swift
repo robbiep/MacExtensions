@@ -61,6 +61,7 @@ public struct SpaceItem: Equatable, Sendable {
     public var identifier: String?
     public var roleDescription: String?
     public var axIndex: Int
+    public var rawFrame: CGRect?
 
     public init(
         title: String,
@@ -69,7 +70,8 @@ public struct SpaceItem: Equatable, Sendable {
         listFrame: CGRect? = nil,
         identifier: String? = nil,
         roleDescription: String? = nil,
-        axIndex: Int = 0
+        axIndex: Int = 0,
+        rawFrame: CGRect? = nil
     ) {
         self.title = title
         self.frame = frame
@@ -78,6 +80,7 @@ public struct SpaceItem: Equatable, Sendable {
         self.identifier = identifier
         self.roleDescription = roleDescription
         self.axIndex = axIndex
+        self.rawFrame = rawFrame
     }
 }
 
@@ -92,6 +95,38 @@ public struct MissionControlSnapshot: Equatable, Sendable {
 
     public var isEmpty: Bool {
         thumbnails.isEmpty && spaces.isEmpty
+    }
+}
+
+/// Authoritative Space ownership metadata from macOS WindowServer (`SLSCopyManagedDisplaySpaces`).
+public struct ManagedSpaceDescriptor: Equatable, Sendable {
+    public var displayUUID: String?
+    public var spaceIndex: Int
+    public var spaceID: UInt64
+    public var isFullScreen: Bool
+    public var appShortNames: [String]
+
+    public init(
+        displayUUID: String? = nil,
+        spaceIndex: Int,
+        spaceID: UInt64 = 0,
+        isFullScreen: Bool,
+        appShortNames: [String]
+    ) {
+        self.displayUUID = displayUUID
+        self.spaceIndex = spaceIndex
+        self.spaceID = spaceID
+        self.isFullScreen = isFullScreen
+        self.appShortNames = appShortNames
+    }
+
+    public var displayName: String? {
+        var uniqueOrdered: [String] = []
+        for name in appShortNames where !name.isEmpty && !uniqueOrdered.contains(name) {
+            uniqueOrdered.append(name)
+        }
+        guard !uniqueOrdered.isEmpty else { return nil }
+        return uniqueOrdered.joined(separator: " & ")
     }
 }
 

@@ -50,7 +50,52 @@ final class MissionControlReader {
             }
         }
 
+        // Fallback: if spaces weren't inside the active display groups (e.g. split across Dock & WindowManager),
+        // scan both host processes for `mc.spaces` / `mc.spaces.list`.
+        if collectSpaces && spaces.isEmpty {
+            for bid in Self.hostBundleIDs {
+                guard let host = application(bid) else { continue }
+                collectSpaceNodes(host, depth: 0, into: &spaces)
+                if !spaces.isEmpty { break }
+            }
+        }
+
+        spaces = normalizeSpaceFrames(spaces)
         return MissionControlSnapshot(thumbnails: thumbnails, spaces: spaces)
+    }
+
+    /// macOS 27 `WindowManager` reports `kAXPositionAttribute` of `mc.spaces.list` buttons as their
+    /// visual center `(midX, midY)` rather than their top-left `(minX, minY)`. Detect that invariant
+    /// and normalize to standard top-left `CGRect` coordinates.
+    private func normalizeSpaceFrames(_ items: [SpaceItem]) -> [SpaceItem] {
+        guard !items.isEmpty else { return items }
+        let needsCenterNormalization = items.contains { item in
+            guard let listFrame = item.listFrame else { return false }
+            return item.frame.maxY > listFrame.maxY + 6
+        } || isCenteredInsideContainer(items)
+
+        guard needsCenterNormalization else { return items }
+        return items.map { item in
+            var copy = item
+            let raw = item.frame
+            copy.rawFrame = raw
+            copy.frame = CGRect(
+                x: raw.origin.x - raw.width / 2,
+                y: raw.origin.y - raw.height / 2,
+                width: raw.width,
+                height: raw.height
+            )
+            return copy
+        }
+    }
+
+    private func isCenteredInsideContainer(_ items: [SpaceItem]) -> Bool {
+        guard let listFrame = items.first?.listFrame, listFrame.width > 0 else { return false }
+        let sorted = items.sorted { $0.frame.origin.x < $1.frame.origin.x }
+        guard let first = sorted.first, let last = sorted.last else { return false }
+        let rawMid = (first.frame.origin.x + last.frame.origin.x) / 2
+        let topLeftMid = (first.frame.midX + last.frame.midX) / 2
+        return abs(rawMid - listFrame.midX) + 12 < abs(topLeftMid - listFrame.midX)
     }
 
     func environmentReport(into out: inout String) {
@@ -71,6 +116,20 @@ final class MissionControlReader {
         }
     }
 
+    func dumpAllHostMissionControlTrees(into out: inout String) {
+        for bid in Self.hostBundleIDs {
+            guard let host = application(bid) else { continue }
+            out += "=== Host: \(bid) ===\n"
+            for child in AX.children(host) {
+                let id = AX.string(child, kAXIdentifierAttribute) ?? ""
+                let title = AX.string(child, kAXTitleAttribute) ?? ""
+                if id.hasPrefix("mc") || title == "Mission Control" {
+                    dumpTree(child, into: &out, maxDepth: 12)
+                }
+            }
+        }
+    }
+
     func dumpTree(_ el: AXUIElement, depth: Int = 0, into out: inout String, maxDepth: Int = 12) {
         guard depth <= maxDepth else { return }
         let pad = String(repeating: "  ", count: depth)
@@ -79,11 +138,12 @@ final class MissionControlReader {
         let id = AX.string(el, kAXIdentifierAttribute).map { " id=\"\($0)\"" } ?? ""
         let title = AX.string(el, kAXTitleAttribute).map { " title=\"\($0)\"" } ?? ""
         let desc = AX.string(el, kAXDescriptionAttribute).map { " desc=\"\($0)\"" } ?? ""
+        let val = AX.string(el, kAXValueAttribute).map { " val=\"\($0)\"" } ?? ""
         let rd = AX.string(el, kAXRoleDescriptionAttribute).map { " roleDesc=\"\($0)\"" } ?? ""
         let fr = AX.frame(el).map {
             " frame=\(Int($0.minX)),\(Int($0.minY)) \(Int($0.width))x\(Int($0.height))"
         } ?? ""
-        out += "\(pad)\(role)\(sub)\(id)\(title)\(desc)\(rd)\(fr)\n"
+        out += "\(pad)\(role)\(sub)\(id)\(title)\(desc)\(val)\(rd)\(fr)\n"
         for child in AX.children(el) {
             dumpTree(child, depth: depth + 1, into: &out, maxDepth: maxDepth)
         }
@@ -110,7 +170,7 @@ final class MissionControlReader {
            let frame = AX.frame(el),
            frame.width >= 8,
            frame.height >= 8 {
-            let title = AX.string(el, kAXTitleAttribute) ?? AX.string(el, kAXDescriptionAttribute) ?? ""
+            let title = AX.nonEmptyString(el, [kAXTitleAttribute, kAXDescriptionAttribute]) ?? ""
             out.append(
                 Thumbnail(
                     title: title,
@@ -128,11 +188,16 @@ final class MissionControlReader {
     }
 
     private func collectSpaceNodes(_ el: AXUIElement, depth: Int, into out: inout [SpaceItem]) {
-        guard depth < 8 else { return }
+        guard depth < 10 else { return }
         let identifier = AX.string(el, kAXIdentifierAttribute)
         if identifier == "mc.spaces" {
             let spacesFrame = AX.frame(el)
             extractSpacesFromContainer(el, parentFrame: spacesFrame, into: &out)
+            return
+        }
+        if identifier == "mc.spaces.list" {
+            let listFrame = AX.frame(el)
+            collectSpaceButtons(in: el, listFrame: listFrame, depth: 0, into: &out)
             return
         }
         for child in AX.children(el) {
@@ -157,25 +222,28 @@ final class MissionControlReader {
         depth: Int,
         into out: inout [SpaceItem]
     ) {
-        guard depth < 4 else { return }
+        guard depth < 5 else { return }
         for child in AX.children(node) {
             let id = AX.string(child, kAXIdentifierAttribute)
             if id == "mc.spaces.add" { continue }
 
             let role = AX.string(child, kAXRoleAttribute) ?? ""
+            let textFromElement = AX.nonEmptyString(
+                child,
+                [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute, kAXHelpAttribute]
+            )
+            let textFromChild = textFromElement == nil ? findStaticTextValue(child) : nil
+            let resolvedText = textFromElement ?? textFromChild
+
             let isButtonLike = role == kAXButtonRole as String
                 || role == kAXRadioButtonRole as String
-                || (role == kAXGroupRole as String && hasSpaceText(child))
+                || (role == kAXGroupRole as String && resolvedText != nil)
 
             if isButtonLike, let frame = AX.frame(child), frame.width >= 16, frame.height >= 14 {
-                let title = (AX.string(child, kAXTitleAttribute)
-                    ?? AX.string(child, kAXDescriptionAttribute)
-                    ?? findStaticTextValue(child)
-                    ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                 let labelFrame = findStaticTextFrame(child)
                 out.append(
                     SpaceItem(
-                        title: title,
+                        title: resolvedText ?? "",
                         frame: frame,
                         labelFrame: labelFrame,
                         listFrame: listFrame,
@@ -190,18 +258,11 @@ final class MissionControlReader {
         }
     }
 
-    private func hasSpaceText(_ el: AXUIElement) -> Bool {
-        if let t = AX.string(el, kAXTitleAttribute), !t.isEmpty { return true }
-        if let d = AX.string(el, kAXDescriptionAttribute), !d.isEmpty { return true }
-        return findStaticTextValue(el) != nil
-    }
-
     private func findStaticTextValue(_ el: AXUIElement, depth: Int = 0) -> String? {
-        guard depth < 3 else { return nil }
+        guard depth < 4 else { return nil }
         for child in AX.children(el) {
             if AX.string(child, kAXRoleAttribute) == kAXStaticTextRole as String {
-                if let val = AX.string(child, kAXValueAttribute) ?? AX.string(child, kAXTitleAttribute),
-                   !val.isEmpty {
+                if let val = AX.nonEmptyString(child, [kAXValueAttribute, kAXTitleAttribute, kAXDescriptionAttribute]) {
                     return val
                 }
             }
@@ -211,7 +272,7 @@ final class MissionControlReader {
     }
 
     private func findStaticTextFrame(_ el: AXUIElement, depth: Int = 0) -> CGRect? {
-        guard depth < 3 else { return nil }
+        guard depth < 4 else { return nil }
         for child in AX.children(el) {
             if AX.string(child, kAXRoleAttribute) == kAXStaticTextRole as String,
                let frame = AX.frame(child),

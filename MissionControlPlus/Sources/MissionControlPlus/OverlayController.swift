@@ -166,27 +166,27 @@ final class OverlayController {
 
     private func renderSpaceOverlays(_ spaceOverlays: [ResolvedSpaceOverlay], allSpaces: [SpaceItem]) {
         let sortedAll = allSpaces.sorted { a, b in
-            if abs(a.frame.minY - b.frame.minY) > 12 { return a.frame.minY < b.frame.minY }
-            return a.frame.minX < b.frame.minX
+            if abs(a.frame.midY - b.frame.midY) > 40 { return a.frame.midY < b.frame.midY }
+            return a.frame.midX < b.frame.midX
         }
 
-        for overlay in spaceOverlays {
-            let item = overlay.spaceItem
-            let idx = sortedAll.firstIndex(of: item)
-            let leftNeighbor = idx.flatMap { $0 > 0 ? sortedAll[$0 - 1].frame : nil }
-            let rightNeighbor = idx.flatMap { $0 + 1 < sortedAll.count ? sortedAll[$0 + 1].frame : nil }
+        let overlayByIndex = Dictionary(
+            uniqueKeysWithValues: spaceOverlays.map { ($0.spaceItem.axIndex, $0) }
+        )
 
-            let displayW = SpaceLabelView.measureTextWidth(overlay.displayName, font: SpaceLabelView.displayFont)
-            let nativeW = SpaceLabelView.measureTextWidth(overlay.originalTitle, font: SpaceLabelView.nativeEstimateFont)
+        let layoutInputs: [SpacePillLayout.LayoutItem] = sortedAll.map { space in
+            let resolved = overlayByIndex[space.axIndex]
+            let displayText = resolved?.displayName ?? space.title
+            let nativeText = resolved?.originalTitle ?? space.title
+            let displayW = SpaceLabelView.measureTextWidth(displayText, font: SpaceLabelView.displayFont)
+            let nativeW = SpaceLabelView.measureTextWidth(nativeText, font: SpaceLabelView.nativeEstimateFont)
+            return SpacePillLayout.LayoutItem(space: space, displayTextWidth: displayW, nativeTextWidth: nativeW)
+        }
 
-            let pillCG = SpacePillLayout.pillFrame(
-                for: item,
-                displayTextWidth: displayW,
-                nativeTextWidth: nativeW,
-                leftNeighborFrame: leftNeighbor,
-                rightNeighborFrame: rightNeighbor
-            )
+        let pillRects = SpacePillLayout.pillFrames(for: layoutInputs)
 
+        for (space, pillCG) in zip(sortedAll, pillRects) {
+            guard let overlay = overlayByIndex[space.axIndex] else { continue }
             let pillAppKit = geometry.appKitRect(fromTopLeft: pillCG)
             guard let screenIdx = geometry.screenIndex(forAppKitRect: pillAppKit),
                   screenIdx < windows.count else { continue }
